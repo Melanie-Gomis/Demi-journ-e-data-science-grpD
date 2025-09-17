@@ -9,19 +9,17 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## SVM à marge souple
-
 ```{r}
 library(ggplot2)
 library(e1071)
 library(caret)
 ```
 
-# Importation des données
+## SVM à noyau
+
 ```{r}
 data <- read.csv("farms_train.csv", sep = ",", header = TRUE)
 data$DIFF <- as.factor(data$DIFF)
-
 # Colonnes à normaliser (sauf la 1ère si nécessaire)
 cols_to_normalize <- 2:ncol(data)
 num_cols <- sapply(data[, cols_to_normalize], is.numeric)
@@ -31,12 +29,12 @@ data[, cols_to_normalize] <- scale(data[, cols_to_normalize])
 
 # Garder une partie pour les test
 data_subset <- data[1:360, ]
-
 ```
+
 
 # Entraînement et validation croisée
 
-On veut minimiser les erreus, donc on s'interresse au F1-score, qu'on veut maximiser.
+On veut minimiser les eurreus, donc on s'interresse au F1-score, qu'on veut maximiser.
 
 ```{r}
 f1_score <- function(y_true, y_pred, positive_class) {
@@ -76,14 +74,14 @@ for (c_val in C_values) {
     train_data <- data_subset[-val_idx, ]
     val_data   <- data_subset[val_idx, ]
     
-    # Entraîner SVM
-    modele <- svm(DIFF ~ ., data = train_data, kernel = "linear", cost = c_val)
+    # Entraîner SVM avec noyau radial
+    modele <- svm(DIFF ~ ., data = train_data, kernel = "radial", cost = c_val)
     
     # Prédire
     pred <- predict(modele, newdata = val_data)
     # Calcul de la matrice de confusion du fold
     cm <- table(Prévu = pred, Vrai = val_data$DIFF)
-  
+    
     # Ajouter cette matrice à la somme cumulée (en gérant les dimensions)
     for (true_class in levels(data_subset$DIFF)) {
       for (pred_class in levels(data_subset$DIFF)) {
@@ -106,7 +104,6 @@ for (c_val in C_values) {
 # Meilleur C
 best <- resultats[which.max(resultats$F1), ]
 cat("La meilleure valeur de C est :", best$C, "avec un F1-score moyen de", best$F1, "\n")
-
 ```
 
 ```{r}
@@ -117,9 +114,6 @@ ggplot(resultats, aes(x = C, y = F1)) +
   labs(title = "F1-score moyen selon la valeur de C (CV)",
        x = "C (log scale)", y = "F1-score") +
   theme_minimal()
-
-```
-```{r}
 # Créer un objet confusionMatrix
 cm_obj <- confusionMatrix(as.table(cm_sum))
 
@@ -136,8 +130,9 @@ ggplot(data = cm_df, aes(x = Prévu, y = Vrai, fill = Freq)) +
   labs(title = "Matrice de confusion cumulée CV", x = "Classe prédite", y = "Classe réelle") +
   theme_minimal() +
   theme(text = element_text(size = 14))
-
 ```
+
+
 # Pour le test
 
 ```{r}
@@ -147,7 +142,7 @@ library(pROC)  # pour la ROC et AUC
 test_data <- data[-(1:360), ]
 
 # Entraînement du modèle final sur tout data_subset avec le meilleur C
-final_model <- svm(DIFF ~ ., data = data_subset, kernel = "linear", cost = best$C, probability = TRUE)
+final_model <- svm(DIFF ~ ., data = data_subset, kernel = "radial", cost = best$C, probability = TRUE)
 
 # Prédiction sur le jeu test (avec probabilités)
 pred_prob <- predict(final_model, newdata = test_data, probability = TRUE)
@@ -180,46 +175,5 @@ ggplot(data = cm_test_df, aes(x = Prévu, y = Vrai, fill = Freq)) +
   labs(title = "Matrice de confusion sur le jeu test", x = "Classe prédite", y = "Classe réelle") +
   theme_minimal() +
   theme(text = element_text(size = 14))
-
 ```
 
-# Prédiction des données finals
-```{r}
-data_goal <- read.csv("farms_test.csv", sep = ",", header = TRUE)
-
-# Colonnes à normaliser (sauf la 1ère si nécessaire)
-cols_to_normalize <- 2:ncol(data_goal)
-num_cols <- sapply(data_goal[, cols_to_normalize], is.numeric)
-
-# Normalisation globale (pour toutes les colonnes sauf la cible)
-data_goal[, cols_to_normalize] <- scale(data_goal[, cols_to_normalize])
-
-# Prédiction des classes DIFF sur data_goal
-pred_goal <- predict(final_model, newdata = data_goal)
-
-# Créer un data frame avec ID (indice ligne) et DIFF (prédiction)
-resultats_goal <- data.frame(
-  ID = 1:nrow(data_goal),
-  DIFF = pred_goal
-)
-
-# Afficher les premières lignes
-head(resultats_goal)
-
-# Afficher les premières lignes
-head(resultats_goal)
-
-write.csv(resultats_goal, file = "predictions_goal.csv", row.names = FALSE)
-
-# Compter le nombre de prédictions par classe DIFF
-count_diff <- as.data.frame(table(resultats_goal$DIFF))
-colnames(count_diff) <- c("DIFF", "Count")
-
-# Barplot du nombre de prédictions par DIFF
-ggplot(count_diff, aes(x = DIFF, y = Count, fill = DIFF)) +
-  geom_bar(stat = "identity") +
-  labs(title = "Nombre de prédictions par classe DIFF",
-       x = "Classe DIFF", y = "Nombre de prédictions") +
-  theme_minimal()
-
-```
