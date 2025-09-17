@@ -1,0 +1,199 @@
+---
+title: "Modèle SVM"
+author: "MG"
+date: "2025-09-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## SVM à marge souple
+
+On fait un SVM à marge souple car les données semblent linéairement séparable.
+
+```{r}
+library(ggplot2)
+library(e1071)
+library(caret)
+```
+
+# Importation des données
+```{r}
+data <- read.csv("farms_train.csv", sep = ",", header = TRUE)
+data$DIFF <- as.factor(data$DIFF)
+
+# Colonnes à normaliser (sauf la 1ère si nécessaire)
+cols_to_normalize <- 2:ncol(data)
+num_cols <- sapply(data[, cols_to_normalize], is.numeric)
+
+
+# Normalisation globale (pour toutes les colonnes sauf la cible)
+data[, cols_to_normalize] <- scale(data[, cols_to_normalize])
+
+# Garder une partie pour les test
+data_subset <- data[1:360, ]
+
+# Traitement des valeurs aberrantes 
+detect_outliers <- function(x) {
+  Q1 <- quantile(x, 0.25, na.rm = TRUE)
+  Q3 <- quantile(x, 0.75, na.rm = TRUE)
+  IQR <- Q3 - Q1
+  (x < (Q1 - 1.5 * IQR)) | (x > (Q3 + 1.5 * IQR))
+}
+outlier_mask <- apply(data_subset %>% select(-DIFF), 2, detect_outliers)
+outlier_rows <- apply(outlier_mask, 1, any)
+data_subset_clean =data_subset[!outlier_rows,]
+nrow(data_subset_clean)
+nrow(data_subset)
+```
+
+# Entraînement et validation croisée
+
+On veut minimiser les eurreus, donc on s'interresse au F1-score, qu'on veut maximiser.
+
+```{r}
+f1_score <- function(y_true, y_pred, positive_class) {
+  y_true <- as.factor(y_true)
+  y_pred <- as.factor(y_pred)
+  
+  cm <- confusionMatrix(y_pred, y_true, positive = positive_class)
+  
+  precision <- cm$byClass["Precision"]
+  recall    <- cm$byClass["Recall"]
+  
+  f1 <- 2 * (precision * recall) / (precision + recall)
+  return(as.numeric(f1))
+}
+```
+
+```{r}
+set.seed(10)
+C_values <- c(0.01, 0.1, 1, 10, 100)
+nfolds <- 5  # 5-fold CV
+
+resultats <- data.frame(C = numeric(), F1 = numeric())
+
+for (c_val in C_values) {
+  
+  # créer les folds
+  folds <- createFolds(data_subset_clean$DIFF, k = nfolds)
+  f1_fold <- c()
+  
+  cm_sum <- matrix(0, nrow = length(levels(data_subset_clean$DIFF)), ncol = length(levels(data_subset_clean$DIFF)))
+  rownames(cm_sum) <- levels(data_subset_clean$DIFF)
+  colnames(cm_sum) <- levels(data_subset_clean$DIFF)
+  
+  for (fold in 1:nfolds) {
+    # Séparer train/validation pour ce fold
+    val_idx <- folds[[fold]]
+    train_data <- data_subset_clean[-val_idx, ]
+    val_data   <- data_subset_clean[val_idx, ]
+    
+    # Entraîner SVM
+    modele <- svm(DIFF ~ ., data = train_data, kernel = "linear", cost = c_val)
+    
+    # Prédire
+    pred <- predict(modele, newdata = val_data)
+    # Calcul de la matrice de confusion du fold
+    cm <- table(Prévu = pred, Vrai = val_data$DIFF)
+  
+    # Ajouter cette matrice à la somme cumulée (en gérant les dimensions)
+    for (true_class in levels(data_subset_clean$DIFF)) {
+      for (pred_class in levels(data_subset_clean$DIFF)) {
+        cm_sum[pred_class, true_class] <- cm_sum[pred_class, true_class] + ifelse(is.na(cm[pred_class, true_class]), 0, cm[pred_class, true_class])
+      }
+    }
+    
+    # Calcul F1
+    f1 <- f1_score(y_true = val_data$DIFF, y_pred = pred, positive_class = levels(data_subset_clean$DIFF)[2])
+    f1_fold <- c(f1_fold, f1)
+  }
+  
+  # Moyenne F1 sur les folds
+  mean_f1 <- mean(f1_fold)
+  
+  # Sauvegarde des résultats
+  resultats <- rbind(resultats, data.frame(C = c_val, F1 = mean_f1))
+}
+
+# Meilleur C
+best <- resultats[which.max(resultats$F1), ]
+cat("La meilleure valeur de C est :", best$C, "avec un F1-score moyen de", best$F1, "\n")
+
+```
+
+```{r}
+ggplot(resultats, aes(x = C, y = F1)) +
+  geom_line(color = "blue") +
+  geom_point(size = 3, color = "red") +
+  scale_x_log10() +
+  labs(title = "F1-score moyen selon la valeur de C (CV)",
+       x = "C (log scale)", y = "F1-score") +
+  theme_minimal()
+```
+```{r}
+# Créer un objet confusionMatrix
+cm_obj <- confusionMatrix(as.table(cm_sum))
+
+print(cm_obj)
+
+# Visualisation (adaptation de ton code)
+cm_df <- as.data.frame(as.table(cm_sum))
+colnames(cm_df) <- c("Prévu", "Vrai", "Freq")
+
+ggplot(data = cm_df, aes(x = Prévu, y = Vrai, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), size = 6, color = "black") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Matrice de confusion cumulée CV", x = "Classe prédite", y = "Classe réelle") +
+  theme_minimal() +
+  theme(text = element_text(size = 14))
+
+```
+# Pour le test
+
+```{r}
+library(pROC)  # pour la ROC et AUC
+
+# Jeu de test (hors data_subset)
+test_data <- data[-(1:360), ]
+
+# Entraînement du modèle final sur tout data_subset avec le meilleur C
+final_model <- svm(DIFF ~ ., data = data_subset_clean, kernel = "linear", cost = best$C, probability = TRUE)
+
+# Prédiction sur le jeu test (avec probabilités)
+pred_prob <- predict(final_model, newdata = test_data, probability = TRUE)
+
+# Extraire les probabilités pour la classe positive (la 2ème classe)
+prob_values <- attr(pred_prob, "probabilities")[, levels(data$DIFF)[2]]
+
+# Calcul ROC et AUC
+roc_obj <- roc(response = test_data$DIFF, predictor = prob_values, levels = rev(levels(test_data$DIFF)))
+
+# Affichage de la courbe ROC
+plot(roc_obj, main = paste("ROC curve (AUC =", round(auc(roc_obj), 3), ")"))
+
+# Prédictions classes
+pred_class <- predict(final_model, newdata = test_data)
+
+# Matrice de confusion sur le jeu test
+cm_test <- confusionMatrix(pred_class, test_data$DIFF, positive = levels(data$DIFF)[2])
+
+print(cm_test)
+
+# Visualisation matrice de confusion test
+cm_test_df <- as.data.frame(cm_test$table)
+colnames(cm_test_df) <- c("Prévu", "Vrai", "Freq")
+
+ggplot(data = cm_test_df, aes(x = Prévu, y = Vrai, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), size = 6, color = "black") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Matrice de confusion sur le jeu test", x = "Classe prédite", y = "Classe réelle") +
+  theme_minimal() +
+  theme(text = element_text(size = 14))
+
+```
+
