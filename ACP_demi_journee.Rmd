@@ -1,0 +1,142 @@
+---
+title: "ACP 1/2 Journée Data Science Groupe D"
+output: html_notebook
+---
+
+Tout d'abord on va et installer/importer les packages nécessaires:
+
+```{r}
+needed <- c("data.table","FactoMineR","factoextra","psych","dplyr","tidyverse")
+new <- needed[!(needed %in% installed.packages()[,"Package"])]
+if(length(new)) install.packages(new, dependencies = TRUE)
+invisible(lapply(needed, library, character.only = TRUE))
+```
+
+
+Et importer les données
+```{r}
+# Adresse à changer
+input_path <- "/Users/maximilianoruiz/Desktop/Journee_data/farms_train.csv" 
+
+out_dir <- "/Users/maximilianoruiz/Desktop/Journee_data/resultats_acp_test"
+
+
+
+
+#Chargement des données en dt
+dt <- data.table::fread(input_path, na.strings = c("", "NA", "NaN"))
+
+#On change la variable DIFF a "saine" et "non saine"
+if (!"DIFF" %in% names(dt)) stop("il y a pas DIFF dans le dataset")
+dt$DIFF <- as.factor(dt$DIFF)
+if (all(levels(dt$DIFF) %in% c("0","1"))) {
+  dt$DIFF <- factor(dt$DIFF, levels = c("0","1"), labels = c("non_saine","saine"))
+}
+
+#Et on prend les valeurs Numeriques (tout sauf DIFF)
+
+num_dt <- dt %>% select(where(is.numeric))
+```
+
+Maintenant on fait l'ACP a l'aide de factomineR
+```{r}
+res.pca <- FactoMineR::PCA(num_dt, scale.unit = TRUE, ncp = ncol(num_dt), graph = FALSE)
+```
+
+On voit la representation de chaque Dimention
+```{r}
+eig <- res.pca$eig
+eig_out <- data.frame(
+  Dim = paste0("Dim", seq_len(nrow(eig))),
+  ValeurPropre = eig[,1],
+  PourcVar = eig[,2],
+  PourcVarCum = eig[,3]
+)
+```
+
+
+```{r}
+# 7) P-values d’association variables–axes (dimdesc)
+# Conseil : demander toutes les variables (proba=1), puis filtrer après.
+dd <- FactoMineR::dimdesc(res.pca, axes = 1:min(5, ncol(num_dt)), proba = 1)
+
+collect_dimdesc <- function(dd_list) {
+  tables <- list()
+  for (ax in names(dd_list)) {
+    q <- dd_list[[ax]]$quanti
+    if (!is.null(q)) {
+      # Forcer en data.frame (évite les listes irrégulières)
+      qdf <- as.data.frame(q, stringsAsFactors = FALSE, check.names = FALSE)
+      # Ajouter le nom de la variable comme colonne
+      vars <- rownames(qdf)
+      if (is.null(vars)) vars <- seq_len(nrow(qdf))
+      qdf$Variable <- vars
+      qdf$Axe <- ax
+      rownames(qdf) <- NULL
+      tables[[ax]] <- qdf
+    }
+  }
+  if (length(tables)) data.table::rbindlist(tables, fill = TRUE) else data.frame()
+}
+
+dd_tab <- collect_dimdesc(dd)
+
+
+# (Optionnel) filtrer les associations significatives (p<0.05)
+pcol <- names(dd_tab)[tolower(names(dd_tab)) == "p.value"]
+if (length(pcol) == 1) {
+  dd_sig <- dd_tab[dd_tab[[pcol]] < 0.05, ]
+} else {
+  dd_sig <- dd_tab  # si pas de colonne p.value, on garde tout
+}
+
+```
+
+
+```{r}
+#Influence des Variables dans les dimentions
+var_cos2 <- as.data.frame(res.pca$var$cos2); var_cos2$Variable <- rownames(var_cos2)
+var_ctr  <- as.data.frame(res.pca$var$contrib); var_ctr$Variable <- rownames(var_ctr)
+var_coord<- as.data.frame(res.pca$var$coord); var_coord$Variable <- rownames(var_coord)
+```
+
+On peut voir que R22,R27,R32 représentent la majorité dans l'influence du DIM 1
+et R8 avec R22 la majorité dans DIM 2
+
+```{r}
+# Individus influence des individus
+ind_cos2 <- as.data.frame(res.pca$ind$cos2); ind_cos2$ID <- rownames(ind_cos2)
+ind_ctr  <- as.data.frame(res.pca$ind$contrib); ind_ctr$ID <- rownames(ind_ctr)
+ind_coord<- as.data.frame(res.pca$ind$coord); ind_coord$ID <- rownames(ind_coord)
+```
+car on a Beaucoup des individus , on a pas un individu avec beaucoup plus d'inertie que les autres > 5 % tous, maximum environ 2%.
+
+
+Maintenant on passe avec les graphiques
+
+1) variances par dimention
+```{r}
+factoextra::fviz_eig(res.pca, addlabels = TRUE, barfill = "gray70", barcolor = "gray30")
+```
+2) Representation Variables:
+```{r}
+factoextra::fviz_pca_var(res.pca, col.var = "cos2",
+                         gradient.cols = c("#BDBDBD","#9E9E9E","#424242"))
+
+```
+
+3)Nuage des Individus
+```{r}
+factoextra::fviz_pca_biplot(res.pca, repel = TRUE,geom.ind = "point")
+```
+
+
+4) Nuage des individus avec DIFF representé:
+```{r}
+factoextra::fviz_pca_ind(
+  res.pca,
+  geom = "point",
+  habillage = dt$DIFF,   
+  palette = c("#1B9E77", "#D95F02")
+) 
+```
