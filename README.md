@@ -1,1 +1,1 @@
-# Demi-journ-e-data-science-grpD
+# Demi-journee-data-science-grpD
